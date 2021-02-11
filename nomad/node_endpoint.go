@@ -548,16 +548,6 @@ func (n *Node) UpdateDrain(args *structs.NodeUpdateDrainRequest,
 	// Update the timestamp of when the node status was updated
 	args.UpdatedAt = now.Unix()
 
-	// COMPAT: Remove in 0.9. Attempt to upgrade the request if it is of the old
-	// format.
-	if args.Drain && args.DrainStrategy == nil {
-		args.DrainStrategy = &structs.DrainStrategy{
-			DrainSpec: structs.DrainSpec{
-				Deadline: -1 * time.Second, // Force drain
-			},
-		}
-	}
-
 	// Setup drain strategy
 	if args.DrainStrategy != nil {
 		// Mark start time for the drain

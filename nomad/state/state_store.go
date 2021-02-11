@@ -832,7 +832,6 @@ func upsertNodeTxn(txn *txn, index uint64, node *structs.Node) error {
 					SetTimestamp(time.Unix(node.StatusUpdatedAt, 0))})
 		}
 
-		node.Drain = exist.Drain                                 // Retain the drain mode
 		node.SchedulingEligibility = exist.SchedulingEligibility // Retain the eligibility
 		node.DrainStrategy = exist.DrainStrategy                 // Retain the drain strategy
 	} else {
@@ -997,7 +996,6 @@ func (s *StateStore) updateNodeDrainImpl(txn *txn, index uint64, nodeID string,
 	}
 
 	// Update the drain in the copy
-	copyNode.Drain = drain != nil // COMPAT: Remove in Nomad 0.10
 	copyNode.DrainStrategy = drain
 	if drain != nil {
 		copyNode.SchedulingEligibility = structs.NodeSchedulingIneligible
