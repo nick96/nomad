@@ -801,9 +801,7 @@ func (n *Node) GetNode(args *structs.NodeSpecificRequest,
 
 			// Setup the output
 			if out != nil {
-				// Clear the secret ID
-				reply.Node = out.Copy()
-				reply.Node.SecretID = ""
+				reply.Node = out
 				reply.Index = out.ModifyIndex
 			} else {
 				// Use the last index that affected the nodes table
