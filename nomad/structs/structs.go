@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/nomad/lib/cpuset"
+
 	"github.com/hashicorp/cronexpr"
 	"github.com/hashicorp/go-msgpack/codec"
 	"github.com/hashicorp/go-multierror"
@@ -2174,6 +2176,7 @@ type NodeStubFields struct {
 // on a client
 type Resources struct {
 	CPU      int
+	Cores    int
 	MemoryMB int
 	DiskMB   int
 	IOPS     int // COMPAT(0.10): Only being used to issue warnings
@@ -2192,6 +2195,7 @@ const (
 func DefaultResources() *Resources {
 	return &Resources{
 		CPU:      100,
+		Cores:    0,
 		MemoryMB: 300,
 	}
 }
@@ -2215,6 +2219,11 @@ func (r *Resources) DiskInBytes() int64 {
 
 func (r *Resources) Validate() error {
 	var mErr multierror.Error
+
+	if r.Cores > 0 && r.CPU > 0 {
+		mErr.Errors = append(mErr.Errors, errors.New("Task can only ask for 'cpu' or 'cores' resource, not both."))
+	}
+
 	if err := r.MeetsMinResources(); err != nil {
 		mErr.Errors = append(mErr.Errors, err)
 	}
@@ -2321,7 +2330,7 @@ func (r *Resources) Canonicalize() {
 func (r *Resources) MeetsMinResources() error {
 	var mErr multierror.Error
 	minResources := MinResources()
-	if r.CPU < minResources.CPU {
+	if r.CPU < minResources.CPU && r.Cores == 0 {
 		mErr.Errors = append(mErr.Errors, fmt.Errorf("minimum CPU value is %d; got %d", minResources.CPU, r.CPU))
 	}
 	if r.MemoryMB < minResources.MemoryMB {
@@ -2961,6 +2970,9 @@ type NodeCpuResources struct {
 	// CpuShares is the CPU shares available. This is calculated by number of
 	// cores multiplied by the core frequency.
 	CpuShares int64
+
+	TotalCpuCores      uint32
+	ReservableCpuCores []uint32
 }
 
 func (n *NodeCpuResources) Merge(o *NodeCpuResources) {
@@ -2970,6 +2982,14 @@ func (n *NodeCpuResources) Merge(o *NodeCpuResources) {
 
 	if o.CpuShares != 0 {
 		n.CpuShares = o.CpuShares
+	}
+
+	if o.TotalCpuCores != 0 {
+		n.TotalCpuCores = o.TotalCpuCores
+	}
+
+	if len(o.ReservableCpuCores) != 0 {
+		n.ReservableCpuCores = o.ReservableCpuCores
 	}
 }
 
@@ -2985,11 +3005,26 @@ func (n *NodeCpuResources) Equals(o *NodeCpuResources) bool {
 	if n.CpuShares != o.CpuShares {
 		return false
 	}
+	if n.TotalCpuCores != o.TotalCpuCores {
+		return false
+	}
+	if len(n.ReservableCpuCores) != len(o.ReservableCpuCores) {
+		return false
+	}
+	for i := range n.ReservableCpuCores {
+		if n.ReservableCpuCores[i] != o.ReservableCpuCores[i] {
+			return false
+		}
+	}
 
 	return true
 }
 
-// NodeMemoryResources captures the memory resources of the node
+func (n *NodeCpuResources) SharesPerCore() int64 {
+	return n.CpuShares / int64(n.TotalCpuCores)
+}
+
+// NodeMemoryResorces captures the memory resources of the node
 type NodeMemoryResources struct {
 	// MemoryMB is the total available memory on the node
 	MemoryMB int64
@@ -3640,7 +3675,8 @@ func (a *AllocatedSharedResources) Canonicalize() {
 
 // AllocatedCpuResources captures the allocated CPU resources.
 type AllocatedCpuResources struct {
-	CpuShares int64
+	CpuShares     int64
+	ReservedCores []uint32
 }
 
 func (a *AllocatedCpuResources) Add(delta *AllocatedCpuResources) {
@@ -3649,6 +3685,8 @@ func (a *AllocatedCpuResources) Add(delta *AllocatedCpuResources) {
 	}
 
 	a.CpuShares += delta.CpuShares
+	a.ReservedCores = cpuset.FromSlice(a.ReservedCores).Union(cpuset.FromSlice(delta.ReservedCores)).ToSlice()
+
 }
 
 func (a *AllocatedCpuResources) Subtract(delta *AllocatedCpuResources) {
@@ -3657,6 +3695,7 @@ func (a *AllocatedCpuResources) Subtract(delta *AllocatedCpuResources) {
 	}
 
 	a.CpuShares -= delta.CpuShares
+	a.ReservedCores = cpuset.FromSlice(a.ReservedCores).Difference(cpuset.FromSlice(delta.ReservedCores)).ToSlice()
 }
 
 func (a *AllocatedCpuResources) Max(other *AllocatedCpuResources) {
@@ -3666,6 +3705,10 @@ func (a *AllocatedCpuResources) Max(other *AllocatedCpuResources) {
 
 	if other.CpuShares > a.CpuShares {
 		a.CpuShares = other.CpuShares
+	}
+
+	if len(other.ReservedCores) > len(a.ReservedCores) {
+		a.ReservedCores = other.ReservedCores
 	}
 }
 
@@ -3805,6 +3848,9 @@ func (c *ComparableResources) Copy() *ComparableResources {
 func (c *ComparableResources) Superset(other *ComparableResources) (bool, string) {
 	if c.Flattened.Cpu.CpuShares < other.Flattened.Cpu.CpuShares {
 		return false, "cpu"
+	}
+	if len(c.Flattened.Cpu.ReservedCores) > 0 && cpuset.FromSlice(other.Flattened.Cpu.ReservedCores).IsSubsetOf(cpuset.FromSlice(c.Flattened.Cpu.ReservedCores)) {
+		return false, "cores"
 	}
 	if c.Flattened.Memory.MemoryMB < other.Flattened.Memory.MemoryMB {
 		return false, "memory"

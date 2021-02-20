@@ -9,9 +9,10 @@ import (
 )
 
 type publishedPorts struct {
-	logger         hclog.Logger
-	publishedPorts map[docker.Port][]docker.PortBinding
-	exposedPorts   map[docker.Port]struct{}
+	logger            hclog.Logger
+	useWildcardHostIP bool
+	publishedPorts    map[docker.Port][]docker.PortBinding
+	exposedPorts      map[docker.Port]struct{}
 }
 
 func newPublishedPorts(logger hclog.Logger) *publishedPorts {
