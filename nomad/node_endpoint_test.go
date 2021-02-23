@@ -903,7 +903,10 @@ func TestClientEndpoint_UpdateDrain(t *testing.T) {
 	dereg := &structs.NodeUpdateDrainRequest{
 		NodeID:        node.ID,
 		DrainStrategy: strategy,
-		WriteRequest:  structs.WriteRequest{Region: "global"},
+		Meta: map[string]string{
+			"message": "this node looks funny",
+		},
+		WriteRequest: structs.WriteRequest{Region: "global"},
 	}
 	var resp2 structs.NodeDrainUpdateResponse
 	require.Nil(msgpackrpc.CallWithCodec(codec, "Node.UpdateDrain", dereg, &resp2))
@@ -914,10 +917,15 @@ func TestClientEndpoint_UpdateDrain(t *testing.T) {
 	ws := memdb.NewWatchSet()
 	out, err := state.NodeByID(ws, node.ID)
 	require.Nil(err)
-	require.True(out.Drain)
+	require.NotNil(out.DrainStrategy)
 	require.Equal(strategy.Deadline, out.DrainStrategy.Deadline)
 	require.Len(out.Events, 2)
 	require.Equal(NodeDrainEventDrainSet, out.Events[1].Message)
+	require.NotNil(out.LastDrain)
+	require.Equal(structs.DrainStatusDraining, out.LastDrain.Status)
+	require.True(out.LastDrain.StartedAt.Before(time.Now()))
+	require.Equal(out.LastDrain.StartedAt, out.LastDrain.UpdatedAt)
+	require.Equal("this node looks funny", out.LastDrain.Meta["message"])
 
 	// before+deadline should be before the forced deadline
 	require.True(beforeUpdate.Add(strategy.Deadline).Before(out.DrainStrategy.ForceDeadline))
@@ -1006,6 +1014,9 @@ func TestClientEndpoint_UpdateDrain_ACL(t *testing.T) {
 	{
 		var resp structs.NodeDrainUpdateResponse
 		require.Nil(msgpackrpc.CallWithCodec(codec, "Node.UpdateDrain", dereg, &resp), "RPC")
+		out, err := state.NodeByID(nil, node.ID)
+		require.NoError(err)
+		require.Equal(validToken.AccessorID, out.LastDrain.AccessorID)
 	}
 
 	// Try with a invalid token
@@ -1314,7 +1325,6 @@ func TestClientEndpoint_GetNode(t *testing.T) {
 
 	// Update the status updated at value
 	node.StatusUpdatedAt = resp2.Node.StatusUpdatedAt
-	node.SecretID = ""
 	node.Events = resp2.Node.Events
 	if !reflect.DeepEqual(node, resp2.Node) {
 		t.Fatalf("bad: %#v \n %#v", node, resp2.Node)
@@ -2858,7 +2868,7 @@ func TestClientEndpoint_ListNodes_Blocking(t *testing.T) {
 				Deadline: 10 * time.Second,
 			},
 		}
-		errCh <- state.UpdateNodeDrain(structs.MsgTypeTestSetup, 3, node.ID, s, false, 0, nil)
+		errCh <- state.UpdateNodeDrain(structs.MsgTypeTestSetup, 3, node.ID, s, false, 0, nil, nil, "")
 	})
 
 	req.MinQueryIndex = 2

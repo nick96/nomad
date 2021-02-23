@@ -963,9 +963,11 @@ func TestStateStore_BatchUpdateNodeDrain(t *testing.T) {
 	for _, id := range []string{n1.ID, n2.ID} {
 		out, err := state.NodeByID(ws, id)
 		require.Nil(err)
-		require.True(out.Drain)
 		require.NotNil(out.DrainStrategy)
 		require.Equal(out.DrainStrategy, expectedDrain)
+		// TODO: cgbaker: more tests for LastDrain
+		require.NotNil(out.LastDrain)
+		require.Equal(structs.DrainStatusDraining, out.LastDrain.Status)
 		require.Len(out.Events, 2)
 		require.EqualValues(1002, out.ModifyIndex)
 		require.EqualValues(7, out.StatusUpdatedAt)
@@ -1002,14 +1004,16 @@ func TestStateStore_UpdateNodeDrain_Node(t *testing.T) {
 		Subsystem: structs.NodeEventSubsystemDrain,
 		Timestamp: time.Now(),
 	}
-	require.Nil(state.UpdateNodeDrain(structs.MsgTypeTestSetup, 1001, node.ID, expectedDrain, false, 7, event))
+	require.Nil(state.UpdateNodeDrain(structs.MsgTypeTestSetup, 1001, node.ID, expectedDrain, false, 7, event, nil, ""))
 	require.True(watchFired(ws))
 
 	ws = memdb.NewWatchSet()
 	out, err := state.NodeByID(ws, node.ID)
 	require.Nil(err)
-	require.True(out.Drain)
 	require.NotNil(out.DrainStrategy)
+	// TODO: cgbaker: more tests for LastDrain
+	require.NotNil(out.LastDrain)
+	require.Equal(structs.DrainStatusDraining, out.LastDrain.Status)
 	require.Equal(out.DrainStrategy, expectedDrain)
 	require.Len(out.Events, 2)
 	require.EqualValues(1001, out.ModifyIndex)
@@ -1138,7 +1142,7 @@ func TestStateStore_UpdateNodeDrain_ResetEligiblity(t *testing.T) {
 		Subsystem: structs.NodeEventSubsystemDrain,
 		Timestamp: time.Now(),
 	}
-	require.Nil(state.UpdateNodeDrain(structs.MsgTypeTestSetup, 1001, node.ID, drain, false, 7, event1))
+	require.Nil(state.UpdateNodeDrain(structs.MsgTypeTestSetup, 1001, node.ID, drain, false, 7, event1, nil, ""))
 	require.True(watchFired(ws))
 
 	// Remove the drain
@@ -1147,14 +1151,18 @@ func TestStateStore_UpdateNodeDrain_ResetEligiblity(t *testing.T) {
 		Subsystem: structs.NodeEventSubsystemDrain,
 		Timestamp: time.Now(),
 	}
-	require.Nil(state.UpdateNodeDrain(structs.MsgTypeTestSetup, 1002, node.ID, nil, true, 9, event2))
+	require.Nil(state.UpdateNodeDrain(structs.MsgTypeTestSetup, 1002, node.ID, nil, true, 9, event2, nil, ""))
 
 	ws = memdb.NewWatchSet()
 	out, err := state.NodeByID(ws, node.ID)
 	require.Nil(err)
-	require.False(out.Drain)
 	require.Nil(out.DrainStrategy)
 	require.Equal(out.SchedulingEligibility, structs.NodeSchedulingEligible)
+	// TODO: cgbaker: more tests for LastDrain
+	require.NotNil(out.LastDrain)
+	require.Equal(structs.DrainStatusCancelled, out.LastDrain.Status)
+	require.Equal(time.Unix(7, 0), out.LastDrain.StartedAt)
+	require.Equal(time.Unix(9, 0), out.LastDrain.UpdatedAt)
 	require.Len(out.Events, 3)
 	require.EqualValues(1002, out.ModifyIndex)
 	require.EqualValues(9, out.StatusUpdatedAt)
@@ -1213,7 +1221,7 @@ func TestStateStore_UpdateNodeEligibility(t *testing.T) {
 			Deadline: -1 * time.Second,
 		},
 	}
-	require.Nil(state.UpdateNodeDrain(structs.MsgTypeTestSetup, 1002, node.ID, expectedDrain, false, 7, nil))
+	require.Nil(state.UpdateNodeDrain(structs.MsgTypeTestSetup, 1002, node.ID, expectedDrain, false, 7, nil, nil, ""))
 
 	// Try to set the node to eligible
 	err = state.UpdateNodeEligibility(structs.MsgTypeTestSetup, 1003, node.ID, structs.NodeSchedulingEligible, 9, nil)
